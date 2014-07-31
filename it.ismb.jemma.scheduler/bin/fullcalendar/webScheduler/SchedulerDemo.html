@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta charset='utf-8' />
+<link rel='stylesheet' href='../lib/cupertino/jquery-ui.min.css' />
+<link href='../fullcalendar.css' rel='stylesheet' />
+<link href='../fullcalendar.print.css' rel='stylesheet' media='print' />
+<script src='http://ajax.googleapis.com/ajax/libs/jquery/1.5/jquery.min.js'></script>
+<script src='http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/jquery-ui.min.js'></script>
+<script src='//code.jquery.com/ui/1.11.0/jquery-ui.js'></script>
+<script src='../lib/moment.min.js'></script>
+<script src='../lib/jquery.min.js'></script>
+<script src='../lib/jquery-ui.custom.min.js'></script>
+<script src='../fullcalendar.min.js'></script>
+<script src='../lib/jquery.ui.touch-punch.min.js'></script>
+
+<script>
+	
+	//this is a simple demo of a GUI for a totally client-side scheduler that use the routines written in java for controlling and monitoring appliances start and stop
+
+	// for the full implementation see Scheduler.html
+	
+	var nowEvent=null;						// variable that contains the event Now (that shows the current time on the scheduler)
+	var intervalSet=null;					// auxiliary variable used for the start and the stop of the now event during the demo
+	var i=0;								// variable that contains the position for the draggable events
+	var events=new Array();					// array that contains the draggable events
+	var copies=new Array();					// array that contains every dropped event on the scheduler
+	var powList=new Array();				// array that contains the power consumption of the appliance at the position i
+	var PVForecast=new Array();				// array that contains the values of the PhotoVoltaic forecast
+	var PVForecastEvents=new Array();		// array that contains the events related of the PhotoVoltaic forecast
+	var start=new Array();					// array that contains the starts of all the PV forecast events
+	var end=new Array();					// array that contains the ends of all the PV forecast events
+	var eventsReadonly=new Array();			// array that stores the value of the Readonly value for the appliance at the position i
+	var isOnCounter=0;						// variable that count how many appliances are turned on at the same time
+	
+	// this function allow to refresh the infos into the dropped events (name,consumption,cost)
+	
+	function refreshEvents()
+	{	
+		for(t=0;t<events.length;t++)
+		{
+			for(l=0;l<copies[t].length;l++)
+			{
+				dispPos=t;
+				pos=l;
+				
+				if(eventsReadonly[t])						// controls if the appliance support PowerProfile cluster
+				{
+					$.post('/calendar/getPower',			// get Power forecast from the powerprofile cluster in jemma
+						JSON.stringify(dispPos),
+						function(power)
+						{
+							power=power/1000;
+							power = roundTo(power,4);
+							if(timeInt(copies[dispPos][0].start)<8 || timeInt(copies[dispPos][0].start)>19) cost=roundTo(power*0.19,4);
+							else cost=roundTo(power*0.20,4);
+							copies[dispPos][0].title=copies[dispPos][0].id+"\n The appliance will consume around " + power + " KWh\n The appliance will cost around "+ cost + "€";
+							$('#calendar').fullCalendar('removeEvents', copies[dispPos][0].id);
+							$('#calendar').fullCalendar('renderEvent', copies[dispPos][0], true);
+						},
+						'json'
+					);
+				}
+				else																// enters only if the appliance support the On/off cluster
+				{
+					copies[dispPos][pos].id=events[dispPos].attr('description')+"_"+(pos+1);
+					copies[dispPos][pos].title=copies[dispPos][pos].id+"\n Checking status";
+					
+					var dispPosLocal=dispPos;
+					var posLocal=pos;
+					
+					$.post('/calendar/isOn',
+						JSON.stringify(dispPos),
+						function(flag2)
+						{
+							if(flag2)
+							{
+								
+								$.post('/calendar/getConsume',						// get instant consumption if the appliance is turned On
+									JSON.stringify(dispPosLocal),
+									function(consume)
+									{
+										if(powList[dispPosLocal]==0){powList[dispPosLocal]=consume;}
+										consume2=consume-powList[dispPosLocal];
+										consume2=roundTo(consume2,4);
+										if(timeInt(copies[dispPosLocal][posLocal].start)<8 || timeInt(copies[dispPosLocal][posLocal].start)>19) cost=roundTo(consume2*0.19,4);
+										else cost=roundTo(consume2*0.20,4);
+										copies[dispPosLocal][posLocal].title=copies[dispPosLocal][posLocal].id+"\n The appliance is consuming around " + consume2 + " KWh\n The appliance is costing around "+ cost + "€"; 
+										$('#calendar').fullCalendar('removeEvents', copies[dispPosLocal][posLocal].id);
+										$('#calendar').fullCalendar('renderEvent', copies[dispPosLocal][posLocal], true);
+									},
+									'json'
+								);
+							}
+							else
+							{								
+								copies[dispPosLocal][posLocal].title=copies[dispPosLocal][posLocal].id+"\n The appliance is turned off";
+								$('#calendar').fullCalendar('removeEvents', copies[dispPosLocal][posLocal].id);
+								$('#calendar').fullCalendar('renderEvent', copies[dispPosLocal][posLocal], true);
+							}
+						},
+						'json'
+					);
+				}
+			}
+		};
+		
+		// rerender the dropped events
+		
+		for(t=0;t<events.length;t++)
+		{
+			for(l=0;l<copies[t].length;l++)
+			{
+				$('#calendar').fullCalendar('removeEvents', copies[t][l].id);
+				$('#calendar').fullCalendar('renderEvent', copies[t][l], true);	
+			}
+		};
+		
+		// take the PV forecast and put the events in the scheduler
+		
+		if(PVForecastEvents.length==0)
+		{
+			var c=new Array();
+			var maxPV=roundTo(PVForecast[0],4);
+			var minPV=roundTo(PVForecast[0],4);
+			for(t=0;t<PVForecast.length;t++)
+			{
+				PVForecast[t]=roundTo(PVForecast[t],4);
+				if(maxPV<PVForecast[t]){maxPV=PVForecast[t];pos=t;}
+				if(minPV>PVForecast[t]){minPV=PVForecast[t];}
+				start[t]=moment();
+				start[t].set("hour",t);
+				start[t].set("minute",0);
+				end[t]=moment();
+				end[t].set("hour",(t+1));
+				end[t].set("minute",0);
+				
+				if(PVForecast[t]!=0)
+				{
+					PVForecastEvents[t]=
+					{
+						title:"PV Forecast: "+PVForecast[t]+" kWh",
+						id: "PV Forecast_"+t,
+						start:start[t],
+						end:end[t],
+						readonly:true
+					}
+				}
+			}
+			
+			// set the color of the dropped PV forecast events
+			
+			for(t=0;t<PVForecast.length;t++)
+			{
+				if(PVForecast[t]!=0)
+				{
+					c[t]=Math.round((PVForecast[t]*100+100*maxPV-200*minPV)/(maxPV-minPV))
+					PVForecastEvents[t].color="rgb(0,"+c[t]+",0)";
+					if(t==pos){PVForecastEvents[t].borderColor="rgb(255,0,0)";}
+				}
+			}
+			
+			// render the PV forecast events
+			
+			for(t=0;t<PVForecast.length;t++)
+			{
+				if(PVForecast[t]!=0)
+				{
+					$('#calendar').fullCalendar('removeEvents', PVForecastEvents[t].id);
+					$('#calendar').fullCalendar('renderEvent', PVForecastEvents[t], true);
+				}
+			}
+		}
+	}
+	
+	// auxiliary function that returns the value rounded 
+	
+	function roundTo(value, decimalpositions)
+	{
+	    var t = value * Math.pow(10,decimalpositions);
+	    t = Math.round(t);
+	    t= t/Math.pow(10,decimalpositions);
+	    return t;
+	}
+	
+	// auxiliary function that returns the hour as an int considering am/pm value
+	
+	function timeInt(copy)
+	{
+		if(copy.format('a')=='pm' && copy.format('h')!=12) {return parseInt(copy.format('h'))+12;}
+		if(copy.format('a')=='am' && copy.format('h')==12) {return 0;}
+		return parseInt(copy.format('h'));
+	}
+	
+	// auxiliary function that control if there's an intersection of dropped events
+	
+	function controlTime(copy,time,l)
+	{
+		for(t=0;t<copy.length;t++)
+		{
+			if( t!=l &&
+				((time[0].ore>=timeInt(copy[t].start) && time[0].ore<=timeInt(copy[t].end)) || 
+				(time[1].ore>=timeInt(copy[t].start) && time[1].ore<=timeInt(copy[t].end)) 	||
+				(time[0].ore==timeInt(copy[t].start) && time[1].ore==timeInt(copy[t].end))	||
+				(time[0].ore<=timeInt(copy[t].start) && time[1].ore>=timeInt(copy[t].end))))
+				{return false;}
+		}
+		return true;
+	}
+	
+	// auxiliary function that control if the appliance is turned On in the given time
+	
+	function controlOnTime(copy,t)
+	{
+		if(timeInt(copy[t].start)>=timeInt(nowEvent.start) && timeInt(copy[t].end)<=timeInt(nowEvent.start)) {return true;}
+		
+		return false;
+	}
+	
+	// auxiliary functions that refresh the infos in the div "messaggi"
+	
+	function stampa(event)
+	{
+		scrivi("The appliance " + event.id + " starts at " + event.start.format('h:mm a') + " and ends at " + event.end.format('h:mm a'));
+	}
+	
+	function scrivi(stringa)
+	{
+		$('#messaggi').hide('fast', function()
+		{
+			$('#messaggi').text("");
+			$('#messaggi').show(450, function()
+			{
+				$('#messaggi').text(stringa);
+			});
+		});	
+	}
+	
+	// function that set the array of droppable events
+	
+	function remoteEventsReceived(events)
+	{
+		var dim=165;
+		for(var k=0;k<events.length;k++)
+		{
+			addEventType(events[k]);
+			powList=powList.concat(0);
+		}
+		dim=dim+29*(events.length-1);
+		dim=dim.toString()+"px";
+		$("#messaggi").css("top",dim);
+		$("#orari").css("top",500);
+	}
+	
+	// function for Demo start and stop 
+	
+	function demoStart()
+	{
+		if(isOnCounter==2)
+		{
+			for(j=0;j<events.length;j++)
+			{
+				$.post('/calendar/execOverloadWarning',
+					JSON.stringify(j),
+					function(){},
+					'json'
+				);	
+			}
+		}
+			
+		nowEvent.start.add("minute",10);
+		
+		$('#orari').text(nowEvent.start.format('h:mm a'));
+		
+		$('#calendar').fullCalendar('removeEvents', nowEvent.id);
+		$('#calendar').fullCalendar('renderEvent', nowEvent, true);
+		
+		for(j=0;j<events.length;j++)
+		{
+			for(k=0;k<copies[j].length;k++)
+			{
+				if(copies[j][k].start.format('h:mm a')==nowEvent.start.format('h:mm a'))
+				{
+					$.post('/calendar/ExecOn',
+						JSON.stringify(j),
+						function(){},
+						'json'
+					);
+					isOnCounter++;
+					refreshEvents();
+				}
+				if(copies[j][k].end.format('h:mm a')==nowEvent.end.format('h:mm a'))
+				{
+					$.post('/calendar/ExecOff',
+						JSON.stringify(j),
+						function(){},
+						'json'
+					);
+					isOnCounter--;
+					refreshEvents();
+				}
+			}
+		}
+	};
+	
+	function prova1()
+	{
+		if(PVForecastEvents.length==0)
+		{
+			var c=new Array();
+			var maxPV=roundTo(PVForecast[0],4);
+			var minPV=roundTo(PVForecast[0],4);
+			for(t=0;t<PVForecast.length;t++)
+			{
+				PVForecast[t]=roundTo(PVForecast[t],4);
+				if(maxPV<PVForecast[t]){maxPV=PVForecast[t];pos=t;}
+				if(minPV>PVForecast[t]){minPV=PVForecast[t];}
+				start[t]=moment();
+				start[t].set("hour",t);
+				start[t].set("minute",0);
+				end[t]=moment();
+				end[t].set("hour",(t+1));
+				end[t].set("minute",0);
+				
+				if(PVForecast[t]!=0)
+				{
+					PVForecastEvents[t]=
+					{
+						title:"PV Forecast: "+PVForecast[t]+" kWh",
+						id: "PV Forecast_"+t,
+						start:start[t],
+						end:end[t],
+						readonly:true
+					}
+				}
+			}
+			
+			for(t=0;t<PVForecast.length;t++)
+			{
+				if(PVForecast[t]!=0)
+				{
+					c[t]=Math.round((PVForecast[t]*100+100*maxPV-200*minPV)/(maxPV-minPV))
+					PVForecastEvents[t].color="rgb(0,"+c[t]+",0)";
+					if(t==pos){PVForecastEvents[t].borderColor="rgb(255,0,0)";}
+				}
+			}
+			
+			for(t=0;t<PVForecast.length;t++)
+			{
+				if(PVForecast[t]!=0)
+				{
+					$('#calendar').fullCalendar('removeEvents', PVForecastEvents[t].id);
+					$('#calendar').fullCalendar('renderEvent', PVForecastEvents[t], true);
+				}
+			}
+		}
+		
+		intervalSet = setInterval(function(){demoStart()},1000);
+	};
+	
+	function prova2()
+	{
+		clearInterval(intervalSet);
+	};
+	
+	function addEventType(event)
+	{
+		var output = document.getElementById('external-events');
+		i++;
+		
+		var ele = document.createElement("div");
+		ele.id='Event_'+i;
+		event.readonly=false;
+		ele.readonly=event.readonly;
+		ele.setAttribute("class",'external-event');
+		ele.description=event.description;
+		
+		ele.innerHTML=event.description;
+		output.appendChild(ele);
+		
+		var n=output.lastChild;
+		divToEvents(n);
+	};
+		
+	// function that create a droppable event for every div
+	
+	function divToEvents(n)
+	{	
+		$('#external-events div.external-event').each(function()
+		{
+			if(n.id==$(this).attr("id"))
+			{
+				var eventObject =
+				{
+					id: $.trim($(this).text()),
+					readonly: n.readonly,
+					title: $.trim($(this).text()), // use the element's text as the event title
+				}
+			};
+			
+			// store the Event Object in the DOM element so we can get to it later
+			
+			$(this).attr("description",$.trim($(this).text()));
+			
+			$(this).data('eventObject', eventObject);
+			
+			// allows to not make conflict between click and drag
+			
+			$(this).click(function()
+			{
+				if ($(this).hasClass('noclick')) {$(this).removeClass('noclick');}
+			    else 
+			    {
+					if(n.id==$(this).attr("id"))
+					{
+						var title = prompt("Set Appliance name", $(this).attr('description'));
+					}
+					
+					if(title!=null)
+					{
+						$(this).attr("description",title);
+						n.innerHTML=title;
+					}
+					
+					for(t=0;t<events.length;t++)
+					{
+						for(l=0;l<copies[t].length;l++)
+						{
+							$('#calendar').fullCalendar('removeEvents',copies[t][l].id);
+						}
+					}
+					
+					if($(this).data('eventObject').readonly)
+					{
+						scrivi("The appliance " + $(this).data('eventObject').title +" start and stop can be modified only manually");
+					}
+					else
+					{
+						scrivi("Drag the event to set a start and an end");		
+					}
+				}
+				refreshEvents();
+			});
+			
+			// allows the event to be draggable if it has the value readonly equals false
+			
+			if(!($(this).data('eventObject').readonly))
+			{
+				$(this).draggable(
+				{
+					start: function(event,ui) {$(this).addClass('noclick');},
+					zIndex: 999,
+					revert: true,      							// will cause the event to go back to its original position after the drag
+					revertDuration: 0  
+				});
+			}
+			
+			// put events in an array
+			
+			events[i-1]=$(this);
+			copies[i-1]=new Array;
+			
+		});
+	};
+	
+	$(document).ready(function()
+	{
+		$.get('/calendar/getPVForecast',function(PV)			// get the PV forecast from jemma
+		{
+			PVForecast=PV;
+		},
+		'json');
+		
+		$('#messaggi').hide('slow');
+		
+		$.get('/calendar/getEvents',function(data)				// get the appliances list from jemma
+			{
+				remoteEventsReceived(data);
+			},'json'
+		);
+		
+		refreshEvents();
+		setInterval(function(){refreshEvents()},10000);			// make the refresh every 10 seconds
+		
+		// inizialize the event Now that shows the current time
+		
+		startNow=moment();
+		startNow=startNow.set("hour",0);
+		startNow=startNow.set("minute",0);
+		endNow=startNow;
+		
+		nowEvent=
+			{
+				id: "Now",
+				start:startNow,
+				end:endNow,
+				readonly:true
+			}
+		
+		nowEvent.color="rgb(255,0,0)";
+		nowEvent.borderColor="rgb(255,0,0)";
+		
+		$('#calendar').fullCalendar('removeEvents', nowEvent.id);
+		$('#calendar').fullCalendar('renderEvent', nowEvent, true);
+		
+		$.post('/calendar/getReadonly',								// get the information about supporting cluster PowerProfile and saves this infos in the array eventsReadonly
+			function(v)
+			{
+				eventsReadonly=v;
+			},
+		'json'
+		);
+		
+		$('#orari').text("12:00 am");
+		
+		$.get('/calendar/refresh',function(){},'json');
+		
+		// initialize the calendar
+		
+		$('#calendar').fullCalendar(
+		{
+			//theme: true,
+			
+			slotDuration: "01:00:00", 								// set the duration of the time slots
+			
+			header: 												// set the buttons in the header (for more infos see the fullcalendar plug-in API)
+			{
+				left: '',
+				center: 'title',
+				right: ''
+			},
+			
+			defaultView: 'agendaDay',								// set the default view of the calendar (for more infos see the fullcalendar plug-in API)
+			
+			editable: function(event)								// allows the event to be editable in base of the readonly value
+			{
+				if(event.readonly) return false;
+				else return true;
+			},
+			
+			droppable: true, 										// allows events to be dropped onto the calendar
+			
+			eventClick: function(event) 							// allows functions by clicking the events on the calendar
+			{
+				if(!(event.readonly))								// allows to delete the event on the calendar
+				{
+					$('#messaggi').hide('fast', function()
+					{
+						$('#messaggi').text("");
+						$('#messaggi').show(450, function()
+						{
+							$('#messaggi').text("Vuoi eliminare l'evento?");
+							var output = document.getElementById('messaggi');
+							var element = document.createElement("input");
+							 
+						    element.type = "button";
+						    element.value = "Remove event";
+						    element.name = "Remove_event";
+						    
+						    element.onclick = function()
+						    { 
+						    	scrivi("The event " + event.id + " has been removed ");
+						    	$('#calendar').fullCalendar('removeEvents', event.id);
+								
+								for(j=0;j<events.length;j++)
+								{
+									flag=0;
+									for(k=0;k<copies[j].length;k++)
+									{
+										if(event.id==copies[j][k].id) 
+										{
+											flag=1;
+											break;
+										}
+									}
+									if(flag==1) break;
+								}
+								
+								var pos=[j,k];
+								
+								$.post('/calendar/unSetTime',
+									JSON.stringify(pos),
+									function(){},
+									'json'
+								);
+								
+								copies[j].splice(k,1);
+								
+								for(k=0;k<copies[j].length;k++)
+								{
+									copies[j][k].id=events[j].attr('description')+"_"+(k+1);
+									copies[j][k].title=events[j].attr('description')+"_"+(k+1);
+								}
+								
+								$('#calendar').fullCalendar('removeEvents');
+								
+								for(j=0;j<events.length;j++)
+								{
+									for(k=0;k<copies[j].length;k++)
+									{
+										$('#calendar').fullCalendar('renderEvent', copies[j][k], true);
+									}
+								}
+								
+								PVForecastEvents=new Array();
+								refreshEvents();
+						    };
+					    	
+							output.appendChild(element);
+						});
+					});	
+				}
+				else
+				{
+					for(j=0;j<events.length;j++)
+					{
+						if(copies[j].length==0){}
+						else
+						{
+							if(event.id==copies[j][0].id){ break;}
+						} 
+					};
+					
+					$.post('/calendar/getEnergyRemote',								// check if the appliance can be remoted control
+						JSON.stringify(j),
+						function(flag)
+						{
+							if(flag)
+							{
+								copies[j][0].readonly=false;
+								
+							}
+							else
+							{
+								scrivi("Enable remote control from the appliance")
+							}
+						},
+						'json'
+					);
+				}
+			},			
+		
+			eventDrop: function(event, delta, revertFunc) 					
+			{
+				if(event.allDay)													// this feature is not implemented
+				{
+					scrivi("The events cannot be of AllDay type");					// you cannot schedule all day events
+					revertFunc();
+				}
+				
+				if(event.readonly)									
+				{
+					for(j=0;j<events.length;j++)
+					{
+						for(k=0;k<copies[j].length;k++)
+						{
+							if(event.id==copies[j][k].id){break;}
+						}
+					}
+					
+					$.post('/calendar/getEnergyRemote',								// check if the appliance can be remoted control
+					JSON.stringify(j),
+					function(flag)
+					{
+						if(flag)
+						{
+							copies[j][0].readonly=false;
+						}
+					});
+					
+					scrivi("The event " + event.id + " cannot be modified");
+					revertFunc();
+				}
+				else
+				{
+					for(j=0;j<events.length;j++)
+					{
+						for(k=0;k<copies[j].length;k++)
+						{
+							if(event.id==copies[j][k].id) 
+							{
+								var Time=
+									[	
+										{
+											"ore" : event.start.get("hour"), 
+											"minuti" : event.start.get("minute"),
+											"AM_PM" : 0
+										},
+										
+										{
+											"ore" : event.end.get("hour"), 
+											"minuti" : event.end.get("minute"),
+											"AM_PM" : 0
+										}
+									];
+								
+								if(controlTime(copies[j],Time,k))
+								{
+									var posTime=
+									{
+										"posDisp" : j,
+										
+										"pos" : k,
+										
+										"start" :
+											{
+												"ore" : event.start.get("hour"), 
+												"minuti" : event.start.get("minute"),
+												"AM_PM" : 0
+											},
+										
+										"stop":
+											{
+												"ore" : event.end.get("hour"), 
+												"minuti" : event.end.get("minute"),
+												"AM_PM" : 0
+											}
+									};
+									
+									stampa(event);
+									copies[j][k].end=event.end;
+									copies[j][k].start=event.start;
+									
+									var posTimeLocal=posTime;
+									
+									$.post('/calendar/changeTime',
+										JSON.stringify(posTimeLocal),
+										function(){},
+										'json'
+									);
+									
+									var posDispLocal=posTime.posDisp;
+									
+									if(controlOnTime(copies[posTime.posDisp],posTime.pos))
+									{
+										
+										$.post('/calendar/getConsume',
+											JSON.stringify(posTime.posDisp),
+											function(consume)
+											{
+												if(powList[posDispLocal]==0){powList[posDispLocal]=consume;}
+												consume2=consume-powList[posDispLocal];
+												consume2=roundTo(consume2,4);
+												if(moment().get("hour")<8 || moment().get("hour")>19) cost=roundTo(consume2*0.19,4);
+												else cost=roundTo(consume2*0.20,4);
+												event.title=event.id+"\n The appliance will consume around " + consume2 + " KWh\n The appliance will cost around "+ cost + "€"; 
+												
+												$('#calendar').fullCalendar('renderEvent', event, true);
+											},
+											'json'
+										);
+									}
+									else
+									{
+										event.title=event.id+"\n The appliance is turned off";
+									}
+								}
+								else{scrivi("Events cannot have intersection");revertFunc();}
+							}
+						}
+					}
+				}
+				refreshEvents();
+			},
+			
+			eventResize: function(event, delta, revertFunc) 
+			{
+				if(event.readonly)
+				{
+					scrivi("The event " + event.id + " cannot be modified");
+					revertFunc();
+				}
+				else
+				{
+					for(j=0;j<events.length;j++)
+					{
+						if(events[j].data('eventObject').readonly){revertFunc();}
+						else
+						{
+							for(k=0;k<copies[j].length;k++)
+							{
+								if(event.id==copies[j][k].id) 
+								{
+									var Time=
+										[	
+											{
+												"ore" : copies[j][k].start.get("hour"), 
+												"minuti" :copies[j][k].start.get("minute"),
+												"AM_PM" : 0
+											},
+											
+											{
+												"ore" : event.end.get("hour"), 
+												"minuti" : event.end.get("minute"),
+												"AM_PM" : 0
+											}
+										];
+										
+									var posTime=
+										{
+											"posDisp" : j,
+											
+											"pos" : k,
+											
+											"start" :
+												{
+													"ore" : event.start.get("hour"), 
+													"minuti" : event.start.get("minute"),
+													"AM_PM" : 0
+												},
+											
+											"stop":
+												{
+													"ore" : event.end.get("hour"), 
+													"minuti" : event.end.get("minute"),
+													"AM_PM" : 0
+												}
+										};
+										
+									if(controlTime(copies[j],Time,k))
+									{	
+										stampa(event);
+										copies[j][k].start=event.start;
+										copies[j][k].end=event.end;
+										
+										$.post('/calendar/changeTime',
+											JSON.stringify(posTime),
+											function(){},
+											'json'
+										);
+										
+										if(controlOnTime(copies[j],k))
+										{
+											var posDispLocal=posTime.posDisp;
+											$.post('/calendar/getConsume',
+												JSON.stringify(j),
+												function(consume)
+												{
+													if(powList[posDispLocal]==0){powList[posDispLocal]=consume;}
+													consume2=consume-powList[posDispLocal];
+													consume2=roundTo(consume2,4);
+													if(moment().get("hour")<8 || moment().get("hour")>19) cost=roundTo(consume2*0.19,4);
+													else cost=roundTo(consume2*0.20,4);
+													event.title=event.id+"\n The appliance will consume around " + consume2 + " KWh\n The appliance will cost around "+ cost + "€"; 
+													$('#calendar').fullCalendar('renderEvent', event, true);
+												},
+												'json'
+											);
+										}
+										else
+										{
+											event.title=event.id+"\n The appliance is turned off";
+										}
+										
+									}
+									else{scrivi("Events cannot have intersection");revertFunc();}
+								}
+							}
+						}
+					}
+				}
+			},
+			
+			drop: function(date) 
+			{	// this function is called when something is dropped
+			
+				// retrieve the dropped element's stored Event Object
+				var originalEventObject = $(this).data('eventObject');
+				
+				// we need to copy it, so that multiple events don't have a reference to the same object
+				var copiedEventObject = $.extend({}, originalEventObject);
+				
+				for(j=0;j<events.length;j++)
+				{
+					if(events[j].data('eventObject').title==copiedEventObject.id) 
+					{
+						break;
+					}
+				};
+				
+				// assign it the date that was reported
+				copiedEventObject.start = date;
+				
+				var date2=moment();
+				date2.set("year",date.get("year"));
+				date2.set("year",date.get("year"));
+				date2.set("month",date.get("month"));
+				date2.set("date",date.get("date"));
+				date2.set("hour",date.get("hour"));
+				date2.add("hours",2);
+				date2.set("minute",date.get("minute"));
+				
+				copiedEventObject.end = date2;
+				
+				var Time=
+					[	
+						{
+							"ore" : date.get("hour"), 
+							"minuti" : date.get("minute"),
+							"AM_PM" : 0
+						},
+						
+						{
+							"ore" : date2.get("hour"), 
+							"minuti" : date2.get("minute"),
+							"AM_PM" : 0
+						}
+					];
+					
+				k=copies[j].length;
+				
+				var posTime=
+					{
+						"posDisp" : j,
+						
+						"pos" : k,
+						
+						"start" :
+							{
+								"ore" : date.get("hour"), 
+								"minuti" : date.get("minute"),
+								"AM_PM" : 0
+							},
+						
+						"stop":
+							{
+								"ore" : date2.get("hour"), 
+								"minuti" : date2.get("minute"),
+								"AM_PM" : 0
+							}
+					};
+				
+				
+				if(event.allDay)
+				{
+					scrivi("The events cannot be of AllDay type");
+				}
+				else
+				{
+					if(controlTime(copies[j],Time,k))
+					{
+						copies[j]=copies[j].concat(copiedEventObject);
+						k=copies[j].length-1;
+						copies[j][k].id=events[j].data('eventObject').title+"_"+(k+1);
+						copies[j][k].title=events[j].data('eventObject').title+"_"+(k+1);
+						
+						$.post('/calendar/setTime',
+							JSON.stringify(posTime),
+							function(){},
+							'json'
+						);
+						
+						stampa(copiedEventObject);
+						
+						if(controlOnTime(copies[j],k))
+						{
+							var dispPosLocal=posTime.posDisp;
+							var posLocal=posTime.pos;
+							$.post('/calendar/getConsume',
+								JSON.stringify(j),
+								function(consume)
+								{
+									if(powList[dispPosLocal]==0){powList[dispPosLocal]=consume;}
+									consume2=consume-powList[dispPosLocal];
+									consume2=roundTo(consume2,4);
+									if(moment().get("hour")<8 || moment().get("hour")>19) cost=roundTo(consume2*0.19,4);
+									else cost=roundTo(consume2*0.20,4);
+									copies[dispPosLocal][posLocal].title=copies[dispPosLocal][posLocal].id+"\n The appliance will consume around " + consume2 + " KWh\n The appliance will cost around "+ cost + "€"; 
+									
+									$('#calendar').fullCalendar('removeEvents', copies[dispPosLocal][posLocal].id);
+									$('#calendar').fullCalendar('renderEvent', copies[dispPosLocal][posLocal], true);
+								},
+								'json'
+							);
+						}
+						else
+						{
+							copies[j][k].title=copies[j][k].id+"\n The appliance is turned off";
+						}
+						
+					}
+					else
+					{scrivi("Events cannot have intersection");}
+				}
+				refreshEvents();
+			}
+		});
+	});
+
+</script>
+
+<style>
+
+	body {
+		margin-top: 40px;
+		text-align: center;
+		font-size: 14px;
+		font-family: "Lucida Grande",Helvetica,Arial,Verdana,sans-serif;
+	}
+		
+	#wrap 
+	{
+		width: 1100px;
+		margin: 0 auto;
+	}
+		
+	#external-events 
+	{
+		float: left;
+		width: 150px;
+		padding: 0 10px;
+		border: 1px solid #ccc;
+		background: #eee;
+		text-align: left;
+	}
+	
+	#messaggi
+	{
+		border-radius: 3px;
+		width: 150px;
+		padding: 10px;
+		margin: 0.5px auto;
+		border: 1px solid #ccc;
+		background: #eee;
+		position: absolute;
+		top: 250px;	
+	}
+	
+	#orari
+	{
+		border-radius: 3px;
+		width: 150px;
+		padding: 10px;
+		margin: 0.5px auto;
+		border: 1px solid #ccc;
+		background: #eee;
+		position: absolute;
+		top: 250px;	
+	}
+		
+	#external-events h4 
+	{
+		font-size: 16px;
+		margin-top: 0;
+		padding-top: 1em;
+	}
+		
+	.external-event 
+	{ /* try to mimick the look of a real event */
+		margin: 10px 0;
+		padding: 2px 4px;
+		background: #3366CC;
+		color: #fff;
+		font-size: .85em;
+		cursor: pointer;
+	}
+		
+	#external-events p 
+	{
+		margin: 1.5em 0;
+		font-size: 11px;
+		color: #666;
+	}
+		
+	#external-events p input 
+	{
+		margin: 0;
+		vertical-align: middle;
+	}
+
+	#calendar 
+	{
+		float: right;
+		width: 900px;
+	}
+	
+	#add-event-button{cursor: pointer;}
+	
+	#clear-events-button{cursor: pointer;}
+	
+</style>
+
+</head>
+
+<body>
+	<div id='wrap'>
+		<div id='external-events'>
+			<h4> Draggable Events </h4>
+			<p>
+				<input type="button" id="add-event-button-1" onclick="prova1()" value="Start"/>
+				<input type="button" id="add-event-button-2" onclick="prova2()" value="Pause"/>
+			</p>
+		</div>
+		<div id='messaggi'></div>
+		<div id='orari'></div>
+		<div id='calendar'></div>
+		<div style='clear:both'></div>
+	</div>
+</body>
+
+</html>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scr:component xmlns:scr="http://www.osgi.org/xmlns/scr/v1.1.0" name="WebCmpScheduler">
+   <implementation class="it.ismb.jemma.scheduler.web.WebComponent"/>
+   <reference bind="bindHttpService" cardinality="1..1" interface="org.osgi.service.http.HttpService" name="HttpService" policy="dynamic" unbind="unbindHttpService"/>
+   <reference bind="bindAppliancesSimpleService" cardinality="1..1" interface="it.ismb.jemma.scheduler.util.AppliancesSimpleService" name="AppliancesSimpleService" policy="dynamic" unbind="unbindAppliancesSimpleService"/>
+</scr:component>
